@@ -5,6 +5,7 @@
 open Functional3D
 open System.Drawing
 
+
 // ------------------------------------------------------------------
 // The first thing you can do is to build a (Christmas) tree!
 // Have a look at the sample image in "images/tree.png".

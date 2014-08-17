@@ -145,3 +145,128 @@ let plant =
 
 
 Fun.resetRotation()
+
+
+
+
+open System.Collections.Generic
+open System
+
+
+type Instruction<'T> =
+        | Enqueue of 'T * (unit -> unit)
+        | Dequeue of ('T -> unit);;
+
+type AsyncBoundedQueue<'T>(capacity: int) =
+
+        let waitingConsumers, elts, waitingProducers = Queue(), Queue<'T>(), Queue()
+
+        let rec balance() =
+          if elts.Count > 0 && waitingConsumers.Count > 0 then
+            elts.Dequeue() |> waitingConsumers.Dequeue()
+            balance()
+          elif elts.Count < capacity && waitingProducers.Count > 0 then
+            let x, reply = waitingProducers.Dequeue()
+            reply()
+            elts.Enqueue x
+            balance()
+
+        let agent = MailboxProcessor.Start(fun inbox ->
+          async { while true do
+                    let! msg = inbox.Receive()
+                    match msg with
+                    | Enqueue(x, reply) ->
+                        waitingProducers.Enqueue (x, reply)
+                    | Dequeue reply ->
+                        waitingConsumers.Enqueue reply
+                    balance() })
+
+        member __.AsyncEnqueue x =
+          agent.PostAndAsyncReply(fun reply -> Enqueue(x, reply.Reply))
+        member __.AsyncDequeue() =
+          agent.PostAndAsyncReply(fun reply -> Dequeue reply.Reply)
+
+        interface System.IDisposable with
+          member __.Dispose() = (agent :> System.IDisposable).Dispose();;
+
+
+while true do
+        let n = 3000
+        use queue = new AsyncBoundedQueue<_>(10)
+        [ async { let timer = System.Diagnostics.Stopwatch.StartNew()
+                  for i in 1..n do
+                    do! queue.AsyncEnqueue i
+                   // ts.Add timer.Elapsed.TotalSeconds
+                  return "Producing", float n / timer.Elapsed.TotalSeconds }
+          async { let timer = System.Diagnostics.Stopwatch.StartNew()
+                  for i in 1..n do
+                    let! _ = queue.AsyncDequeue()
+                    while timer.Elapsed.TotalMilliseconds < float i do
+                      do! Async.Sleep 1
+                  return "Consuming", float n / timer.Elapsed.TotalSeconds } ]
+        |> Async.Parallel
+        |> Async.RunSynchronously
+        |> Seq.iter (fun (s, t) -> printfn "%s at %0.0f msgs/s" s t);
+
+
+type message =
+    | Finished of AsyncReplyChannel<string Set>
+    | Visit of string * AsyncReplyChannel<string Set>;;
+
+
+open System.Text.RegularExpressions;;
+
+let link = Regex("href=\"([^\"]+)");;
+
+let crawl (baseUri: string) =
+    let timer = System.Diagnostics.Stopwatch.StartNew()
+    let baseUri = System.Uri baseUri
+    use box = MailboxProcessor.Start(fun inbox ->
+      let rec loop n visited = async {
+          let! msg = inbox.Receive()
+          match msg with
+          | Finished reply ->
+              do! recur (n-1) visited reply
+          | Visit(uri, reply) ->
+              if Set.contains uri visited then
+                do! recur n visited reply
+              else
+                async {
+                  use client = new System.Net.WebClient()
+                  let! html = client.AsyncDownloadString baseUri
+                  for url: Match in link.Matches html |> Seq.cast do
+                    let uri = ref null
+                    if System.Uri.TryCreate(baseUri, url.Groups.[1].Value, uri) then
+                      inbox.Post(Visit(string !uri, reply))
+                  inbox.Post(Finished reply)
+                } |> Async.Start
+                do! recur (n+1) (Set.add uri visited) reply
+        }
+      and recur n visited (reply: AsyncReplyChannel<_>) = async {
+          if n=0 && inbox.CurrentQueueLength=0 then
+            reply.Reply visited
+          else
+            do! loop n visited
+        }
+      loop 0 Set.empty)
+    box.PostAndReply(fun reply -> Visit(string baseUri, reply));;
+
+crawl "http://www.expert-fsharp.com"
+
+
+let rec fib = function
+    | 0 | 1 as n -> n
+    | n -> fib(n-1) + fib(n-2);;
+
+> let rec fib i = 
+        function 
+            | 0 
+            | 1 as n -> n
+            | n when n<=i ->
+                fib i (n-1) + fib i (n-2) | n ->
+                let p = System.Threading.Tasks.Future.Create(fun () -> fib i (n-2)) 
+                let q = fib i (n-1)
+                p.Value + q;;
+
+
+    val fib : int -> int > time fib 30;;
